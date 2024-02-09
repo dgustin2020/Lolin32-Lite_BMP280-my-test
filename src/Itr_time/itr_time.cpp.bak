@@ -1,0 +1,81 @@
+/*
+itr_time.c
+uso il timer 0 di 4
+*/
+
+#include <header.h>
+
+
+/* locali */
+static bool itr_time_scaduto_flg = false;
+static hw_timer_t * timer = NULL;
+static portMUX_TYPE timerMux_itr_time = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint16_t cnt_reload;
+static volatile uint64_t itr_compare_buff;
+static FnPtr gestione_itr;//procedura chiamata in itr
+static uint64_t itr_n_cicli;
+
+/****  Code with critica section ****/
+static void IRAM_ATTR onTime_itr() {
+  portENTER_CRITICAL_ISR(&timerMux_itr_time);
+#ifdef SET_CAL
+  /* gestione calibrazione timer */
+  if (++cnt_reload > 999)
+    cnt_reload = 0;
+  if (cnt_reload > calset.cal_sel)
+    itr_compare_buff += calset.cal_base;         
+  else 
+    itr_compare_buff += calset.cal_base_1;    
+#else
+  itr_compare_buff +=  itr_n_cicli;
+#endif   
+  timerAlarmWrite(timer,itr_compare_buff, false);     
+  itr_time_scaduto_flg = true;  /* set flag itr scaduto per main */
+  gestione_itr();  /* goto a gestione itr */
+  portEXIT_CRITICAL_ISR(&timerMux_itr_time);
+}
+  
+
+/****/
+void itr_time_init(FnPtr gest_itr, uint8_t timer_usato, uint16_t divisore_usato, uint64_t n_cicli) {
+  gestione_itr = gest_itr;
+  itr_n_cicli = n_cicli;
+  cnt_reload = 0;
+  #ifdef DEBUG_CAL_XTAL
+  Serial.printf("itr_time_1000_init\r");
+  Serial.printf("cal.base    = %0d-%0d\r", (uint32_t)(calset.cal_base >> 32), (uint32_t)calset.cal_base);
+  Serial.printf("cal.base_1  = %0d-%0d\r", (uint32_t)(calset.cal_base_1 >> 32), (uint32_t)calset.cal_base_1);
+  Serial.printf("cal.sel     = %0d\r", calset.cal_sel);
+  Serial.printf("cal.default = %d\r\n", calset.cal_default);
+  #endif
+  // Configure the Prescaler at 80 the quarter of the ESP32 is cadence at 80Mhz
+  // 80000000 / 16 = 5000000 tics / seconde
+  timer = timerBegin(timer_usato, divisore_usato, true);                
+//  timer = timerBegin(TIMER_1000, PRESCALER_TIMER_1000, true);                
+  timerAttachInterrupt(timer, &onTime_itr, true);    
+  timerStop(timer);
+  itr_compare_buff = timerRead(timer);
+  //Serial.printf("reload %08x-%08x \r",(uint32_t)(itr_compare_buff >> 32), (uint32_t)itr_compare_buff);
+  itr_compare_buff +=  TIC_TIMER_1MSEC;
+  //Serial.printf("reload %08x-%08x \r\n",(uint32_t)(itr_compare_buff >> 32), (uint32_t)itr_compare_buff);
+  timerAlarmWrite(timer, itr_compare_buff, false);           
+  timerAlarmEnable(timer);    
+  //uint64_t tmp = timerAlarmRead(timer);;
+  //Serial.printf("reload %08x-%08x \r\n",(uint32_t)(tmp >> 32), (uint32_t)tmp);
+  timerStart(timer);
+}
+
+uint64_t itr_time_read_counter(void)
+{
+  return timerRead(timer);
+}
+
+bool itr_time_scaduto(void)
+{
+  return itr_time_scaduto_flg;
+}
+
+void itr_time_scaduto_clear(void)
+{
+  itr_time_scaduto_flg = false;
+}
